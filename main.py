@@ -379,6 +379,7 @@ def main(cfg):
                         episode_data_dir, "{}_prompt_points.png".format(cnt_step)
                     )
                 )
+                plt.close(fig1)
 
                 # Get VLM prediction
                 rgb_im = Image.fromarray(rgb, mode="RGBA").convert("RGB")
@@ -473,6 +474,7 @@ def main(cfg):
                     fig2.savefig(
                         os.path.join(episode_data_dir, "{}_map.png".format(cnt_step + 1))
                     )
+                    plt.close(fig2)
 
             else:
                 logging.info("Skipping black image!")
@@ -506,6 +508,7 @@ def main(cfg):
                         end_time = time.time()
                         if end_time - start_time > 60:
                             break
+                        plt.close(fig3)
                         pts_normal, pts_pix, fig3 = tsdf_planner.find_next_point_region(cur_pt, regions_dict)
                         pts_normal = np.append(pts_normal, floor_height)
                         pts = pos_normal_to_habitat(pts_normal)
@@ -520,7 +523,9 @@ def main(cfg):
                         fig3.savefig(
                             os.path.join(episode_data_dir, "{}_region.png".format(cnt_step + 1))
                         )
+                    plt.close(fig3)
                 else:
+                    plt.close(fig3)
                     for _ in range(3):
                         obs = simulator.step("turn_left")
                     agent_state = agent.get_state()
@@ -550,6 +555,7 @@ def main(cfg):
                 fig4.savefig(
                     os.path.join(episode_data_dir, "{}_semantic.png".format(cnt_step + 1))
                 )
+                plt.close(fig4)
                 
                 rotation = quat_to_coeffs(
                     quat_from_angle_axis(angle, np.array([0, 1, 0]))
@@ -639,6 +645,8 @@ def main(cfg):
             tokens=global_stats["total_tokens"],
             cost=cost_text,
         )
+        # Keep long multi-GPU runs bounded in matplotlib memory.
+        plt.close("all")
         set_current_question(None)
 
     progress.close()
