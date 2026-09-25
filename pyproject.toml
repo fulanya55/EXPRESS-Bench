@@ -66,6 +66,6 @@ dependencies = [
 packages = ["src"]
 
 [tool.uv.sources]
-habitat-sim = { path = "/root/wxwu/model/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" }
-magnum = { path = "/root/wxwu/model/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" }
+habitat-sim = { path = "/root/wxwu/github/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" }
+magnum = { path = "/root/wxwu/github/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" }
 prismatic = { path = "vendor/prismatic" }

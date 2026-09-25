@@ -278,13 +278,13 @@ requires-dist = [
     { name = "draccus", specifier = ">=0.7.1" },
     { name = "einops", specifier = "==0.7.0" },
     { name = "ftfy", specifier = "==6.1.3" },
-    { name = "habitat-sim", path = "/root/wxwu/model/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" },
+    { name = "habitat-sim", path = "/root/wxwu/github/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" },
     { name = "huggingface-hub", specifier = ">=0.17.3" },
     { name = "imageio", specifier = "==2.37.4" },
     { name = "imageio-ffmpeg", specifier = "==0.6.0" },
     { name = "joblib", specifier = "==1.3.2" },
     { name = "jsonlines", specifier = "==4.0.0" },
-    { name = "magnum", path = "/root/wxwu/model/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" },
+    { name = "magnum", path = "/root/wxwu/github/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" },
     { name = "matplotlib", specifier = "==3.10.9" },
     { name = "networkx", specifier = "==3.2.1" },
     { name = "ninja", specifier = "==1.11.1.1" },
@@ -388,7 +388,7 @@ wheels = [
 [[package]]
 name = "habitat-sim"
 version = "0.3.3"
-source = { path = "/root/wxwu/model/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" }
+source = { path = "/root/wxwu/github/habitat_sim-0.3.3-cp310-cp310-linux_x86_64.whl" }
 dependencies = [
     { name = "attrs" },
     { name = "gitpython" },
@@ -578,7 +578,7 @@ wheels = [
 [[package]]
 name = "magnum"
 version = "0.0.0"
-source = { path = "/root/wxwu/model/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" }
+source = { path = "/root/wxwu/github/magnum-0.0.0-cp310-cp310-linux_x86_64.whl" }
 wheels = [
     { filename = "magnum-0.0.0-cp310-cp310-linux_x86_64.whl", hash = "sha256:1246eaa15c7676c7b4a90e37336aaa601ff0779205dafabf2a05e64140d033dc" },
 ]

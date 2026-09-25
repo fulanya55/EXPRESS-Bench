@@ -1,8 +1,15 @@
 import time
 import logging
+import os
 from pathlib import Path
 import torch
 import numpy as np
+
+# The released checkpoint contains the LLM weights, while the Prismatic
+# loader still needs the local Llama-2 config and tokenizer during setup.
+LOCAL_LLAMA_ROOT = Path("/root/wxwu/model/Llama-2-7b-hf")
+if LOCAL_LLAMA_ROOT.is_dir():
+    os.environ.setdefault("PRISMATIC_LLAMA2_7B_PATH", str(LOCAL_LLAMA_ROOT))
 
 from prismatic import load
 
