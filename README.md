@@ -68,7 +68,7 @@ index, each process loads one VLM copy on its assigned GPU, and rank 0 merges
 `results.rank*.pkl` before scoring:
 
 ```
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+EGL_PLATFORM=surfaceless CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 uv run torchrun --standalone --nproc_per_node=8 main.py -cf fine_eqa.yaml \
   --input-price <USD-per-1M-input-tokens> \
   --output-price <USD-per-1M-output-tokens>
