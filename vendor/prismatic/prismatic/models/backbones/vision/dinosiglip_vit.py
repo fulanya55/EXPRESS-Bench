@@ -6,6 +6,7 @@ Vision backbone that returns concatenated features from both DINOv2 and SigLIP.
 
 from dataclasses import dataclass
 from functools import partial
+import os
 from pathlib import Path
 from typing import Callable, Dict, Tuple
 
@@ -30,7 +31,7 @@ DINOSigLIP_VISION_BACKBONES = {
     },
 }
 
-LOCAL_MODEL_ROOT = Path("/root/wxwu/model")
+LOCAL_MODEL_ROOT = Path(os.environ.get("PRISMATIC_MODEL_ROOT", "/root/wxwu/model"))
 LOCAL_VISION_WEIGHTS = {
     "dino": LOCAL_MODEL_ROOT / "vit_large_patch14_reg4_dinov2.lvd142m.safetensors",
     "siglip": LOCAL_MODEL_ROOT / "vit_so400m_patch14_siglip_384.safetensors",
@@ -59,7 +60,7 @@ class DinoSigLIPViTBackbone(VisionBackbone):
                     f"Missing local {component} vision weights: {weight_path}"
                 )
 
-        # Initialize both featurizers from files under /root/wxwu/model.
+        # Initialize both featurizers from files under the configured model root.
         self.dino_featurizer: VisionTransformer = timm.create_model(
             self.dino_timm_path_or_url,
             pretrained=True,

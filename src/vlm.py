@@ -5,28 +5,26 @@ from pathlib import Path
 import torch
 import numpy as np
 
-# The released checkpoint contains the LLM weights, while the Prismatic
-# loader still needs the local Llama-2 config and tokenizer during setup.
-LOCAL_LLAMA_ROOT = Path("/root/wxwu/model/Llama-2-7b-hf")
-if LOCAL_LLAMA_ROOT.is_dir():
-    os.environ.setdefault("PRISMATIC_LLAMA2_7B_PATH", str(LOCAL_LLAMA_ROOT))
-
-from prismatic import load
-
-
-LOCAL_MODEL_ROOT = Path("/root/wxwu/model")
-
-
 class VLM:
     def __init__(self, cfg):
         start_time = time.time()
-        # Resolve the released Prismatic checkpoint from the shared local model
-        # directory. This avoids falling back to a Hugging Face cache or Hub
-        # download when the config contains the short model name.
+        # Keep all local model locations in the YAML config. This avoids
+        # relying on shell startup files and makes migration a two-line edit.
+        model_root_value = getattr(cfg, "model_root", None) or "/root/wxwu/model"
+        model_root = Path(str(model_root_value)).expanduser()
+        llama_root_value = getattr(cfg, "llama_path", None) or model_root / "Llama-2-7b-hf"
+        llama_root = Path(str(llama_root_value)).expanduser()
+        os.environ["PRISMATIC_MODEL_ROOT"] = str(model_root)
+        os.environ["PRISMATIC_LLAMA2_7B_PATH"] = str(llama_root)
+
+        # Import after setting the paths: Prismatic reads its local backbone
+        # locations while constructing its model registries.
+        from prismatic import load
+
         model_id = str(cfg.model_id)
         model_path = Path(model_id)
         if not model_path.is_absolute():
-            local_candidate = LOCAL_MODEL_ROOT / model_path
+            local_candidate = model_root / model_path
             if local_candidate.is_dir():
                 model_id = str(local_candidate)
 

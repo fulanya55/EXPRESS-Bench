@@ -15,7 +15,10 @@ save_freq: 5
 vlm:
   hf_token:
   device: cuda:0
-  model_id: /root/wxwu/model/prism-dinosiglip+7b
+  # Edit these paths when moving the local model bundle to another machine.
+  model_root: /root/wxwu/model
+  llama_path: /root/wxwu/model/Llama-2-7b-hf
+  model_id: prism-dinosiglip+7b
 
 # Camera, image
 camera_height: 1.5

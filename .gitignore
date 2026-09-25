@@ -1,6 +1,7 @@
 *.py[cod]
 __pycache__/
 *.egg-info/
+.env
 
 # Large local datasets and generated experiment outputs are not source files.
 data/hm3d/
