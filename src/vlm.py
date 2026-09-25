@@ -1,15 +1,29 @@
 import time
 import logging
+from pathlib import Path
 import torch
 import numpy as np
 
 from prismatic import load
 
 
+LOCAL_MODEL_ROOT = Path("/root/wxwu/model")
+
+
 class VLM:
     def __init__(self, cfg):
         start_time = time.time()
-        self.model = load(cfg.model_id, hf_token=cfg.hf_token)
+        # Resolve the released Prismatic checkpoint from the shared local model
+        # directory. This avoids falling back to a Hugging Face cache or Hub
+        # download when the config contains the short model name.
+        model_id = str(cfg.model_id)
+        model_path = Path(model_id)
+        if not model_path.is_absolute():
+            local_candidate = LOCAL_MODEL_ROOT / model_path
+            if local_candidate.is_dir():
+                model_id = str(local_candidate)
+
+        self.model = load(model_id, hf_token=cfg.hf_token)
         self.model.to(cfg.device, dtype=torch.bfloat16)
         logging.info(f"Loaded VLM in {time.time() - start_time:.3f}s")
 
