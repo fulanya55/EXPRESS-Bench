@@ -3,6 +3,11 @@ dataset_path: ./data/express-bench.json
 scene_data_path: /root/wxwu/dataset/HM3D
 output_dir: ./experiment_result
 
+# Optional gateway pricing, in USD per 1M tokens. The API reports usage but
+# does not report the account tariff; fill these two values to show dollars.
+api_input_usd_per_1m: null
+api_output_usd_per_1m: null
+
 # Sensor
 rgb_sensor: True
 depth_sensor: True

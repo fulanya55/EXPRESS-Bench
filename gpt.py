@@ -1,6 +1,9 @@
 import base64
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
+import threading
 import requests
 
 
@@ -23,6 +26,106 @@ _load_local_env()
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_URL = os.environ.get("OPENAI_URL", "https://api.openai.com/v1").rstrip("/")
 OPENAI_MODEL = "gpt-5.6-luna"
+
+
+def _optional_float(value):
+    if value is None or str(value).strip() == "":
+        return None
+    return float(value)
+
+
+_usage_lock = threading.Lock()
+_usage = {
+    "calls": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": 0.0,
+    "cost_known": True,
+}
+_usage_file = None
+_input_price_usd_per_1m = _optional_float(os.environ.get("OPENAI_INPUT_USD_PER_1M"))
+_output_price_usd_per_1m = _optional_float(os.environ.get("OPENAI_OUTPUT_USD_PER_1M"))
+_current_question_ind = None
+
+
+def set_current_question(question_ind):
+    global _current_question_ind
+    _current_question_ind = question_ind
+
+
+def configure_usage(output_dir=None, rank=0, input_price_usd_per_1m=None,
+                    output_price_usd_per_1m=None):
+    """Configure per-process API accounting and its JSONL output file.
+
+    Prices are deliberately configurable because OpenAI-compatible gateways
+    generally return token usage but not the account's USD tariff.
+    """
+    global _usage_file, _input_price_usd_per_1m, _output_price_usd_per_1m
+    if input_price_usd_per_1m is not None:
+        _input_price_usd_per_1m = float(input_price_usd_per_1m)
+    if output_price_usd_per_1m is not None:
+        _output_price_usd_per_1m = float(output_price_usd_per_1m)
+    if output_dir:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        _usage_file = Path(output_dir) / f"api_usage.rank{rank}.jsonl"
+
+
+def usage_snapshot():
+    with _usage_lock:
+        return {
+            **_usage,
+            "input_usd_per_1m": _input_price_usd_per_1m,
+            "output_usd_per_1m": _output_price_usd_per_1m,
+        }
+
+
+def write_usage_summary(output_dir, rank=0):
+    summary_path = Path(output_dir) / f"api_usage.rank{rank}.json"
+    summary_path.write_text(
+        json.dumps(usage_snapshot(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return summary_path
+
+
+def _record_usage(response_payload):
+    usage = response_payload.get("usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+    completion_tokens = int(
+        usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+    )
+    total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or 0)
+    cost_usd = None
+    if _input_price_usd_per_1m is not None and _output_price_usd_per_1m is not None:
+        cost_usd = (
+            prompt_tokens * _input_price_usd_per_1m
+            + completion_tokens * _output_price_usd_per_1m
+        ) / 1_000_000.0
+
+    record = {
+        "time": datetime.now(timezone.utc).isoformat(),
+        "model": response_payload.get("model", OPENAI_MODEL),
+        "request_id": response_payload.get("id"),
+        "question_ind": _current_question_ind,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": cost_usd,
+    }
+    with _usage_lock:
+        _usage["calls"] += 1
+        _usage["prompt_tokens"] += prompt_tokens
+        _usage["completion_tokens"] += completion_tokens
+        _usage["total_tokens"] += total_tokens
+        if cost_usd is None:
+            _usage["cost_known"] = False
+        else:
+            _usage["cost_usd"] += cost_usd
+        if _usage_file is not None:
+            with _usage_file.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
 
 
 # Function to encode the image
@@ -72,4 +175,5 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
     response.raise_for_status()
 
     output = response.json()
+    _record_usage(output)
     return output["choices"][0]['message']["content"]

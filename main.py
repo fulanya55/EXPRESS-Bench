@@ -22,6 +22,7 @@ import magnum as mn
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
+import torch
 import habitat_sim
 from habitat_sim.utils.common import quat_to_coeffs, quat_from_angle_axis
 from habitat_sim.utils import viz_utils as vut
@@ -36,7 +37,13 @@ from src.habitat import (
 from src.geom import get_cam_intr, get_scene_bnds
 from src.vlm import VLM
 from src.tsdf import TSDFPlanner
-from gpt import gpt_4o_mini
+from gpt import (
+    configure_usage,
+    gpt_4o_mini,
+    set_current_question,
+    usage_snapshot,
+    write_usage_summary,
+)
 from evaluation import score
 
 
@@ -63,7 +70,99 @@ def resolve_scene_files(scene_data_path, scene_id):
     )
 
 
+def setup_distributed(cfg):
+    """Use one process per GPU when launched through torchrun."""
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if world_size > 1:
+        if not torch.distributed.is_initialized():
+            # A CPU-side process group is enough for barriers and avoids
+            # competing with Habitat's CUDA context for NCCL resources.
+            torch.distributed.init_process_group(backend="gloo", init_method="env://")
+        cfg.vlm.device = f"cuda:{local_rank}"
+    return rank, local_rank, world_size
+
+
+def aggregate_usage(output_dir, world_size):
+    """Merge per-rank usage summaries into one easy-to-read JSON file."""
+    summaries = []
+    for rank in range(world_size):
+        path = Path(output_dir) / f"api_usage.rank{rank}.json"
+        if path.is_file():
+            with path.open(encoding="utf-8") as handle:
+                summaries.append(json.load(handle))
+    merged = {
+        "calls": sum(item.get("calls", 0) for item in summaries),
+        "prompt_tokens": sum(item.get("prompt_tokens", 0) for item in summaries),
+        "completion_tokens": sum(item.get("completion_tokens", 0) for item in summaries),
+        "total_tokens": sum(item.get("total_tokens", 0) for item in summaries),
+        "cost_known": all(item.get("cost_known", False) for item in summaries),
+        "cost_usd": sum(item.get("cost_usd", 0.0) for item in summaries),
+        "ranks": summaries,
+    }
+    if summaries:
+        merged["input_usd_per_1m"] = summaries[0].get("input_usd_per_1m")
+        merged["output_usd_per_1m"] = summaries[0].get("output_usd_per_1m")
+    path = Path(output_dir) / "api_usage.json"
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return merged
+
+
+def write_progress(output_dir, rank, completed, total, usage):
+    """Publish a small atomic status file for the other torchrun ranks."""
+    path = Path(output_dir) / f"progress.rank{rank}.json"
+    payload = {
+        "completed": completed,
+        "total": total,
+        "calls": usage["calls"],
+        "total_tokens": usage["total_tokens"],
+        "cost_known": usage["cost_known"],
+        "cost_usd": usage["cost_usd"],
+    }
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def read_progress(output_dir, world_size):
+    states = []
+    for rank in range(world_size):
+        path = Path(output_dir) / f"progress.rank{rank}.json"
+        if path.is_file():
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    states.append(json.load(handle))
+            except (OSError, json.JSONDecodeError):
+                continue
+    return {
+        "completed": sum(item.get("completed", 0) for item in states),
+        "total": sum(item.get("total", 0) for item in states),
+        "calls": sum(item.get("calls", 0) for item in states),
+        "total_tokens": sum(item.get("total_tokens", 0) for item in states),
+        "cost_known": len(states) == world_size and all(
+            item.get("cost_known", False) for item in states
+        ),
+        "cost_usd": sum(item.get("cost_usd", 0.0) for item in states),
+    }
+
+
+def usage_difference(after, before):
+    """Return the API usage attributable to one question."""
+    return {
+        "calls": after["calls"] - before["calls"],
+        "prompt_tokens": after["prompt_tokens"] - before["prompt_tokens"],
+        "completion_tokens": after["completion_tokens"] - before["completion_tokens"],
+        "total_tokens": after["total_tokens"] - before["total_tokens"],
+        "cost_known": after["cost_known"],
+        "cost_usd": after["cost_usd"] - before["cost_usd"],
+        "input_usd_per_1m": after["input_usd_per_1m"],
+        "output_usd_per_1m": after["output_usd_per_1m"],
+    }
+
+
 def main(cfg):
+    rank, local_rank, world_size = setup_distributed(cfg)
     camera_tilt = cfg.camera_tilt_deg * np.pi / 180
     img_height = cfg.img_height
     img_width = cfg.img_width
@@ -71,6 +170,13 @@ def main(cfg):
     scene_data_path = cfg.scene_data_path
     output_dir = cfg.output_dir
     seed = cfg.seed
+
+    if rank == 0:
+        for pattern in ("progress.rank*.json", "progress.rank*.tmp", "api_usage.rank*.json", "api_usage.rank*.jsonl"):
+            for stale_path in Path(output_dir).glob(pattern):
+                stale_path.unlink(missing_ok=True)
+    if world_size > 1:
+        torch.distributed.barrier()
     
     # Prompt
     region_prompt = "./prompt/region.txt"
@@ -84,12 +190,30 @@ def main(cfg):
         questions_data = json.load(file)
     logging.info(f"Loaded {len(questions_data)} questions.")
 
-    # Load VLM
+    configure_usage(
+        output_dir=output_dir,
+        rank=rank,
+        input_price_usd_per_1m=getattr(cfg, "api_input_usd_per_1m", None),
+        output_price_usd_per_1m=getattr(cfg, "api_output_usd_per_1m", None),
+    )
+
+    # Load VLM. With torchrun each process gets a separate copy on one GPU.
     vlm = VLM(cfg.vlm)
 
-    # Run all questions
+    # Each rank gets a disjoint deterministic slice of the dataset.
+    question_indices = list(range(rank, len(questions_data), world_size))
     results_all = []
-    for question_ind in tqdm(range(len(questions_data))):
+    write_progress(output_dir, rank, 0, len(question_indices), usage_snapshot())
+    progress = tqdm(
+        question_indices,
+        desc=f"Eval GPU {local_rank}" if world_size > 1 else "Eval",
+        position=rank if world_size > 1 else 0,
+        dynamic_ncols=True,
+        unit="question",
+    )
+    for question_ind in progress:
+        set_current_question(question_ind)
+        question_usage_start = usage_snapshot()
 
         result = {"question_ind": question_ind}
         question_data = questions_data[question_ind]
@@ -117,6 +241,7 @@ def main(cfg):
             pass
         sim_settings = {
             "scene": scene,
+            "gpu_device_id": local_rank,
             "scene_dataset": os.path.join(scene_data_path, "hm3d/hm3d_annotated_basis.scene_dataset_config.json"),
             "default_agent": 0,
             "sensor_height": cfg.camera_height,
@@ -452,6 +577,7 @@ def main(cfg):
         ex_prompt = f"Question: {question}\nAnswer: {answer}\nResponse: {gen_answer}\nYour mark: "
         img_path = os.path.join(episode_data_dir, f"{cnt_step}.png")
         EAC = gpt_4o_mini(score_prompt, ex_prompt, img_path)
+        question_usage = usage_difference(usage_snapshot(), question_usage_start)
 
         # Episode summary
         logging.info(f"\n== Episode Summary")
@@ -463,6 +589,14 @@ def main(cfg):
         logging.info(f"Gen_answer: {gen_answer}")
         logging.info(f"EAC: {EAC}")
         logging.info(f"Path_len: {path_len}")
+        logging.info(
+            f"API usage: {question_usage['calls']} calls, "
+            f"{question_usage['total_tokens']} tokens, "
+            f"${question_usage['cost_usd']:.6f}"
+            if question_usage["cost_known"]
+            else f"API usage: {question_usage['calls']} calls, "
+            f"{question_usage['total_tokens']} tokens, cost=?"
+        )
 
         # Distance to target point
         path = habitat_sim.ShortestPath()
@@ -483,21 +617,60 @@ def main(cfg):
             "end_pts": pts,
             "goal_dis": goal_dis,
             "path_len": path_len,
+            "api_usage": question_usage,
         })
 
         # Save data
         results_all.append(result)
         with open(os.path.join(episode_data_dir, f"result.pkl"), "wb") as f:
             pickle.dump(result, f)
+        with open(os.path.join(episode_data_dir, "api_usage.json"), "w", encoding="utf-8") as f:
+            json.dump(question_usage, f, ensure_ascii=False, indent=2)
         if (question_ind+1) % cfg.save_freq == 0:
-            with open(os.path.join(output_dir, f"results_{question_ind+1}.pkl"), "wb") as f:
+            with open(os.path.join(output_dir, f"results.rank{rank}_{question_ind+1}.pkl"), "wb") as f:
                 pickle.dump(results_all, f)
+        stats = usage_snapshot()
+        write_progress(output_dir, rank, len(results_all), len(question_indices), stats)
+        global_stats = read_progress(output_dir, world_size)
+        cost_text = f"${global_stats['cost_usd']:.4f}" if global_stats["cost_known"] else "cost=?"
+        progress.set_postfix(
+            done=f"{global_stats['completed']}/{len(questions_data)}",
+            calls=global_stats["calls"],
+            tokens=global_stats["total_tokens"],
+            cost=cost_text,
+        )
+        set_current_question(None)
 
-    # Save all data again
-    with open(os.path.join(output_dir, "results.pkl"), "wb") as f:
+    progress.close()
+    local_results_path = Path(output_dir) / f"results.rank{rank}.pkl"
+    with local_results_path.open("wb") as f:
         pickle.dump(results_all, f)
-    C_avg, C_star_avg, E_path, d_T_avg = score(results_all)
-    logging.info(f"\nC_avg: {C_avg}\nC_star_avg: {C_star_avg}\nE_path: {E_path}\nd_T_avg: {d_T_avg}")
+    write_usage_summary(output_dir, rank=rank)
+
+    if world_size > 1:
+        torch.distributed.barrier()
+    if rank == 0:
+        if world_size > 1:
+            results_all = []
+            for rank_index in range(world_size):
+                rank_path = Path(output_dir) / f"results.rank{rank_index}.pkl"
+                with rank_path.open("rb") as f:
+                    results_all.extend(pickle.load(f))
+            results_all.sort(key=lambda item: item["question_ind"])
+        with open(os.path.join(output_dir, "results.pkl"), "wb") as f:
+            pickle.dump(results_all, f)
+        C_avg, C_star_avg, E_path, d_T_avg = score(results_all)
+        usage = aggregate_usage(output_dir, world_size)
+        cost_text = f"${usage['cost_usd']:.6f}" if usage["cost_known"] else "unknown (set API unit prices)"
+        logging.info(
+            f"\nC_avg: {C_avg}\nC_star_avg: {C_star_avg}\n"
+            f"E_path: {E_path}\nd_T_avg: {d_T_avg}\n"
+            f"API calls: {usage['calls']}\nAPI tokens: {usage['total_tokens']}\n"
+            f"API cost: {cost_text}"
+        )
+    if world_size > 1:
+        torch.distributed.barrier()
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -507,15 +680,34 @@ if __name__ == "__main__":
     # Get config path
     parser = argparse.ArgumentParser()
     parser.add_argument("-cf", "--cfg_file", help="cfg file path", default="", type=str)
+    parser.add_argument(
+        "--input-price",
+        type=float,
+        default=None,
+        help="USD per 1M input tokens (overrides api_input_usd_per_1m)",
+    )
+    parser.add_argument(
+        "--output-price",
+        type=float,
+        default=None,
+        help="USD per 1M output tokens (overrides api_output_usd_per_1m)",
+    )
     args = parser.parse_args()
     cfg = OmegaConf.load(args.cfg_file)
+    if args.input_price is not None:
+        cfg.api_input_usd_per_1m = args.input_price
+    if args.output_price is not None:
+        cfg.api_output_usd_per_1m = args.output_price
     OmegaConf.resolve(cfg)
 
     # Set up logging
     output_dir = cfg.output_dir
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-    logging_path = os.path.join(cfg.output_dir, "log.log")
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    logging_name = f"log.rank{rank}.log" if world_size > 1 else "log.log"
+    logging_path = os.path.join(cfg.output_dir, logging_name)
     logging.basicConfig(
         level=logging.INFO,
         format="%(message)s",

@@ -34,6 +34,9 @@ def make_simple_cfg(settings):
     # simulator backend
     sim_cfg = habitat_sim.SimulatorConfiguration()
     sim_cfg.scene_id = settings["scene"]
+    # Under torchrun, keep Habitat's renderer on the same GPU as the VLM
+    # process. The default Habitat device is GPU 0 for every process.
+    sim_cfg.gpu_device_id = settings.get("gpu_device_id", 0)
 
     # agent
     agent_cfg = habitat_sim.agent.AgentConfiguration()

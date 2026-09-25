@@ -6,7 +6,7 @@ Embodied Question Answering (EQA) is a challenging task in embodied intelligence
 
 ### Installation
 
-Set up the conda environment (Linux, Python 3.9):
+Set up the environment (Linux, Python 3.10; this checkout uses `uv`):
 ```
 conda env create -f environment.yml
 conda activate fine-eqa
@@ -54,8 +54,28 @@ Afterward, your [data](https://github.com/kxxxxxxxxxx/EXPRESS-Bench/tree/main/da
 To run the Fine-EQA model, you can use the following command:
 
 ```
-python main.py -cf fine_eqa.yaml
+uv run python main.py -cf fine_eqa.yaml
 ```
+
+The evaluator writes `api_usage.json` and `api_usage.rank*.jsonl` under
+`output_dir`. The OpenAI-compatible endpoint returns token usage, but not the
+account's USD tariff. Set `api_input_usd_per_1m` and `api_output_usd_per_1m` in
+`fine_eqa.yaml` (or pass `--input-price` and `--output-price`) to show the
+running dollar cost in the progress bar and the final log.
+
+For one process per GPU, launch with `torchrun`. Questions are sharded by
+index, each process loads one VLM copy on its assigned GPU, and rank 0 merges
+`results.rank*.pkl` before scoring:
+
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+uv run torchrun --standalone --nproc_per_node=8 main.py -cf fine_eqa.yaml \
+  --input-price <USD-per-1M-input-tokens> \
+  --output-price <USD-per-1M-output-tokens>
+```
+
+Each rank displays its progress bar; the `done`, `tokens`, and `cost` fields
+are aggregated across ranks as status files are updated.
 
 ### Acknowledgement
 This project is built upon the [explore-eqa](https://github.com/Stanford-ILIAD/explore-eqa). We sincerely thank the authors for their excellent work and open-source contribution, which served as a solid foundation for our development.
