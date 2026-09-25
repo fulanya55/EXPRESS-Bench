@@ -1,6 +1,6 @@
 seed: 42
 dataset_path: ./data/express-bench.json
-scene_data_path: ./data
+scene_data_path: /root/wxwu/dataset/HM3D
 output_dir: ./experiment_result
 
 # Sensor

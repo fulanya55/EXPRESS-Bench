@@ -1,4 +1,13 @@
 import numpy as np
+import re
+
+
+def _parse_mark(value):
+    """Parse either `3` or the rubric-style `3/5` returned by the judge."""
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", value)
+    if match is None:
+        raise ValueError(f"Could not parse score component: {value!r}")
+    return float(match.group(0))
 
 
 def score(results):
@@ -6,7 +15,7 @@ def score(results):
     for result in results:
         if result["path_len"] != float("inf"):
             EAC = result["EAC"].replace("Your mark:", "").strip()
-            grd, acc = float(EAC.split(",")[0]), int(EAC.split(",")[1])
+            grd, acc = _parse_mark(EAC.split(",", 1)[0]), int(_parse_mark(EAC.split(",", 1)[1]))
             C.append(grd*acc)
             C_star.append(acc)
             p_path.append(result["path_len"])
@@ -21,4 +30,3 @@ def score(results):
     d_T_avg = np.mean(d_T)
 
     return C_avg, C_star_avg, E_path, d_T_avg
-

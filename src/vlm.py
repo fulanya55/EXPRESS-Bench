@@ -47,16 +47,18 @@ class VLM:
         return generated_text
 
     def get_loss(self, image, prompt, tokens, get_smx=True, T=1):
-        "Get unnormalized losses (negative logits) of the tokens"
+        """Return normalized first-token probabilities for the requested strings."""
         prompt_builder = self.model.get_prompt_builder()
         prompt_builder.add_turn(role="human", message=prompt)
         prompt_text = prompt_builder.get_prompt()
-        losses = self.model.get_loss(
-            image,
-            prompt_text,
+        pixel_values = self.model.vision_backbone.image_transform(image)
+        probabilities = self.model.generate_batch(
+            pixel_values,
+            [prompt_text],
             return_string_probabilities=tokens,
+            max_new_tokens=1,
         )[0]
-        losses = np.array(losses)
+        probabilities = np.asarray(probabilities, dtype=np.float64)
         if get_smx:
-            return np.exp(-losses / T) / np.sum(np.exp(-losses / T))
-        return losses
+            return probabilities / np.sum(probabilities)
+        return probabilities

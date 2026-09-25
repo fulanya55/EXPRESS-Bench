@@ -16,6 +16,7 @@ import csv
 import pickle
 import logging
 import math
+from pathlib import Path
 import quaternion
 import magnum as mn
 import matplotlib.pyplot as plt
@@ -37,6 +38,29 @@ from src.vlm import VLM
 from src.tsdf import TSDFPlanner
 from gpt import gpt_4o_mini
 from evaluation import score
+
+
+def resolve_scene_files(scene_data_path, scene_id):
+    """Resolve both the repository layout and a flat HM3D scene directory."""
+    root = Path(scene_data_path).expanduser()
+    scene_name = Path(scene_id).name
+    asset_name = scene_name.split("-", 1)[1] if "-" in scene_name else scene_name
+    scene_dirs = [root / Path(scene_id), root / scene_name]
+    for scene_dir in scene_dirs:
+        if not scene_dir.is_dir():
+            continue
+        glb_candidates = [
+            scene_dir / f"{asset_name}.basis.glb",
+            scene_dir / f"{asset_name}.glb",
+        ]
+        for glb_path in glb_candidates:
+            if glb_path.is_file():
+                navmesh_path = scene_dir / f"{asset_name}.navmesh"
+                return str(glb_path), str(navmesh_path)
+    searched = "\n".join(str(path) for path in scene_dirs)
+    raise FileNotFoundError(
+        f"Could not find HM3D scene {scene_id!r} under {root}. Searched:\n{searched}"
+    )
 
 
 def main(cfg):
@@ -72,8 +96,11 @@ def main(cfg):
         question = question_data["question"]
         answer = question_data["answer"]
         question_type = question_data["type"]
-        scene = os.path.join(scene_data_path, question_data["scene_id"], question_data["scene_id"].split("-")[1]+".basis.glb")
-        navmesh_file = scene.replace("glb", "navmesh")
+        scene, navmesh_file = resolve_scene_files(scene_data_path, question_data["scene_id"])
+        if not os.path.isfile(navmesh_file):
+            raise FileNotFoundError(
+                f"Missing navmesh for {question_data['scene_id']}: {navmesh_file}"
+            )
         init_pts = question_data["start_position"]
         init_rotation = question_data["start_rotation"]
         goal_pts = question_data["goal_position"]

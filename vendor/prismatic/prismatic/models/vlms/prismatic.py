@@ -488,15 +488,18 @@ class PrismaticVLM(VLM):
         with torch.autocast("cuda", dtype=autocast_dtype, enabled=self.enable_mixed_precision_training):
             for idx, input_ids in enumerate(batch_input_ids):
                 if isinstance(pixel_values, torch.Tensor):
-                    pixel_values = pixel_values[idx]
+                    # Keep the batch dimension expected by `PrismaticVLM.forward`.
+                    pixel_values_for_sample = pixel_values[idx : idx + 1]
                 elif isinstance(pixel_values, dict):
-                    pixel_values = {k: pixel_values[k][idx] for k in pixel_values}
+                    pixel_values_for_sample = {k: pixel_values[k][idx : idx + 1] for k in pixel_values}
                 else:
                     raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
 
                 # Handle `return_string_probabilities`
                 if return_string_probabilities is None:
-                    full_out_ids = super().generate(input_ids=input_ids, pixel_values=pixel_values, **kwargs)
+                    full_out_ids = super().generate(
+                        input_ids=input_ids, pixel_values=pixel_values_for_sample, **kwargs
+                    )
                     gen_ids = full_out_ids[0, input_ids.shape[1] :]
 
                     # Decode `gen_ids` and strip any <EOS> tokens
@@ -505,7 +508,7 @@ class PrismaticVLM(VLM):
                 else:
                     full_out_dict = super().generate(
                         input_ids=input_ids,
-                        pixel_values=pixel_values,
+                        pixel_values=pixel_values_for_sample,
                         output_scores=True,
                         return_dict_in_generate=True,
                         **kwargs,

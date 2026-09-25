@@ -1,8 +1,28 @@
 import base64
+import os
+from pathlib import Path
 import requests
 
-# OpenAI API Key
-API_KEY = ""
+
+def _load_local_env():
+    """Load simple KEY=value entries from the repository's untracked .env."""
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip().strip("\"'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_local_env()
+API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_URL = os.environ.get("OPENAI_URL", "https://api.openai.com/v1").rstrip("/")
+OPENAI_MODEL = "gpt-5.6-luna"
 
 
 # Function to encode the image
@@ -36,12 +56,20 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
         base64_image = encode_image(img_path)
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
     payload = {
-        "model": "gpt-4o-mini",       
+        "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": prompt_system},
             {"role": "user", "content": content}
         ]}
-    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is empty; add it to the repository .env file")
+    response = requests.post(
+        f"{OPENAI_URL}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
 
     output = response.json()
     return output["choices"][0]['message']["content"]
