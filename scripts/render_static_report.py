@@ -82,16 +82,38 @@ def render_report(data, report_path: Path):
     top = types[0] if types else None
     bottom = types[-1] if types else None
     gap = partial["c"] - partial["epath"] if partial["c"] is not None and partial["epath"] is not None else None
+    scored_rows = [row for row in rows if row["c"] is not None]
+    path_rows = [row for row in rows if row["epath"] is not None]
+    zero_score = sum(row["c"] == 0 for row in scored_rows)
+    high_score = sum(row["c"] >= 80 for row in scored_rows)
+    path_penalty = sum(row["epath"] + 1e-9 < row["c"] for row in path_rows)
+    severe_path_penalty = sum(
+        row["c"] > 0 and row["epath"] < 0.5 * row["c"] for row in path_rows
+    )
+    projected_cost = analysis["average_question_cost"] * target
     analysis_lines = [
         f'已保存 <strong>{completed:,}</strong> 条，覆盖 <strong>{fmt(progress_pct, 1)}%</strong>；其中 <strong>{partial["scored_count"]:,}</strong> 条有有效评分。',
         f'C_avg 为 <strong>{fmt(partial["c"])}%</strong>，E_path 为 <strong>{fmt(partial["epath"])}%</strong>，路径项平均降低约 <strong>{fmt(gap)} 个百分点</strong>。',
         f'当前最高类型为 <strong>{h(top["type"])}</strong>（{fmt(top["c"])}%），最低为 <strong>{h(bottom["type"])}</strong>（{fmt(bottom["c"])}%）。' if top and bottom else "",
+        f'评分分布中 <strong>{zero_score:,}</strong> 条为 0 分，<strong>{high_score:,}</strong> 条达到 80 分或以上；这说明当前结果同时存在大量完全错误和一批高置信正确样本。',
+        f'{path_penalty:,}/{len(path_rows):,} 条有效路径出现路径折损，其中 <strong>{severe_path_penalty:,}</strong> 条的 E_path 低于回答分的一半；主要瓶颈在探索和到达目标，而不只在答案生成。',
+        f'按当前已保存单题平均成本线性估算，跑满 {target:,} 条约需 <strong>{money(projected_cost)}</strong>；实际金额会随场景步数和重试次数变化。',
         f'已保存单题平均成本 <strong>{money(analysis["average_question_cost"])}</strong>；全部已发出请求累计 <strong>{money(api["cost"])}</strong>。',
     ]
     if data["invalid_scores"]:
         ids = ", ".join(str(item["index"]) for item in data["invalid_scores"])
         analysis_lines.append(f'评分格式异常的题目编号：<strong>{h(ids)}</strong>；保留单题结果，不计入平均评分。')
     analysis_html = "".join(f"<li>{line}</li>" for line in analysis_lines if line)
+
+    low_rows = ""
+    for row in sorted(scored_rows, key=lambda item: (item["c"], item["epath"] or 0))[:8]:
+        low_rows += (
+            f'<tr><td class="num">{row["index"]}</td><td>{h(row["type"])}</td>'
+            f'<td class="question">{h(row["question"])}</td>'
+            f'<td class="question">{h(row["answer"])}</td>'
+            f'<td class="question">{h(row["gen_answer"])}</td>'
+            f'<td class="num">{fmt(row["c"])}%</td><td class="num">{fmt(row["epath"])}%</td></tr>'
+        )
 
     # A compact SVG cost curve; all other charts use static HTML bars.
     cumulative = 0.0
@@ -134,6 +156,7 @@ def render_report(data, report_path: Path):
 <section class="panel"><h2>8 卡分片进度</h2><div class="table-wrap"><table><thead><tr><th>卡</th><th>完成</th><th class="num">进度</th><th class="num">API 费用</th></tr></thead><tbody>{rank_rows}</tbody></table></div></section></div>
 <div class="grid section"><section class="panel"><h2>评分准确度分布</h2><div class="table-wrap"><table><thead><tr><th>得分</th><th>占比</th><th class="num">数量</th></tr></thead><tbody>{accuracy_rows}</tbody></table></div></section>
 <section class="panel"><h2>单题累计费用</h2>{cost_svg}<p class="muted">曲线仅统计已保存的 {completed:,} 条结果；上方累计费用包含全部已发出请求。</p></section></div>
+<section class="section panel"><h2>典型低分样本</h2><p class="muted">按 C 分数从低到高列出当前样本中的 8 条，便于区分视觉识别错误与导航失败。</p><div class="table-wrap"><table><thead><tr><th class="num">编号</th><th>类型</th><th>问题</th><th>参考答案</th><th>模型答案</th><th class="num">C</th><th class="num">E_path</th></tr></thead><tbody>{low_rows}</tbody></table></div></section>
 <section class="section panel"><h2>已保存单题结果（{completed:,} 条）</h2><div class="table-wrap"><table><thead><tr><th class="num">编号</th><th>类型</th><th>问题</th><th>EAC</th><th class="num">C</th><th class="num">E_path</th><th class="num">Tokens</th><th class="num">费用</th></tr></thead><tbody>{detail_rows}</tbody></table></div></section>
 </main></body></html>'''
     report_path.write_text(html, encoding="utf-8")
