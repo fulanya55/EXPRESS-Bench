@@ -343,12 +343,48 @@ def refresh_html(data):
         "el('type-filter').addEventListener('change',()=>{drawType();fillTables()});drawType();drawRank();drawEac();drawCost();fillTables();",
         "function fillAnalysis(){const list=el('analysis-list');const sorted=DATA.by_type.filter(x=>x.c!=null).sort((a,b)=>b.c-a.c);const strongest=sorted[0];const weakest=sorted[sorted.length-1];const gap=DATA.partial.c-DATA.partial.epath;const items=[`已保存 <strong>${DATA.status.completed.toLocaleString()}</strong> 条，覆盖 <strong>${fmt(DATA.status.completed/DATA.status.target*100,1)}%</strong>；有效评分 ${DATA.partial.scored_count.toLocaleString()} 条。`,`整体 C_avg 为 <strong>${fmt(DATA.partial.c)}%</strong>，E_path 为 <strong>${fmt(DATA.partial.epath)}%</strong>，路径执行使平均分降低约 <strong>${fmt(gap)} 个百分点</strong>。`,strongest?`类型表现最高：<strong>${strongest.type}</strong>（C_avg ${fmt(strongest.c)}%）；最低：<strong>${weakest.type}</strong>（${fmt(weakest.c)}%）。`:'' ,`已保存结果累计 API 成本 <strong>${money(DATA.analysis.saved_cost)}</strong>；全量已发出请求累计 <strong>${money(DATA.api_total.cost)}</strong>。`];list.innerHTML=items.filter(Boolean).map(x=>`<li>${x}</li>`).join('')}el('type-filter').addEventListener('change',()=>{drawType();fillTables()});drawType();drawRank();drawEac();drawCost();fillTables();fillAnalysis();",
     )
+
+    # Older refreshes inserted these blocks repeatedly.  Collapse them after
+    # all normal substitutions so the browser executes one clean script.
+    status_pattern = re.compile(
+        r"el\('status-title'\)\.textContent = .*?"
+        r"el\('saved-count-caption'\)\.textContent = DATA\.status\.completed;",
+        flags=re.DOTALL,
+    )
+    status_matches = status_pattern.findall(html)
+    if status_matches:
+        html = status_pattern.sub("", html)
+        html = html.replace(
+            "el('done').textContent = DATA.status.completed + ' / ' + DATA.status.target;",
+            "el('done').textContent = DATA.status.completed + ' / ' + DATA.status.target;\n"
+            + status_matches[0],
+            1,
+        )
+    max_line = "el('progress-bar').parentElement.setAttribute('aria-valuemax',DATA.status.target);"
+    html = html.replace(max_line, "")
+    html = html.replace(
+        "el('progress-bar').parentElement.setAttribute('aria-valuenow',DATA.status.completed);",
+        "el('progress-bar').parentElement.setAttribute('aria-valuenow',DATA.status.completed);\n"
+        + max_line,
+        1,
+    )
+    marker = "el('type-filter').addEventListener"
+    analysis_start = html.find("function fillAnalysis(){")
+    listener_start = html.find(marker, analysis_start)
+    if analysis_start >= 0 and listener_start > analysis_start:
+        analysis_block = html[analysis_start:listener_start]
+        pieces = analysis_block.split("function fillAnalysis(){")
+        first_body = pieces[1]
+        canonical = "function fillAnalysis(){" + first_body
+        html = html[:analysis_start] + canonical + html[listener_start:]
+    html = re.sub(r"fillAnalysis\(\);(?:fillAnalysis\(\);)+", "fillAnalysis();", html)
     REPORT_PATH.write_text(html, encoding="utf-8")
 
 
 if __name__ == "__main__":
     data = make_data()
-    refresh_html(data)
+    from render_static_report import render_report
+    render_report(data, REPORT_PATH)
     print(json.dumps({
         "report": str(REPORT_PATH),
         "state": data["status"]["state"],
