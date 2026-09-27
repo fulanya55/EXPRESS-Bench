@@ -270,6 +270,19 @@ def make_data():
 
 def refresh_html(data):
     html = REPORT_PATH.read_text(encoding="utf-8")
+    # Make repeated refreshes idempotent.  The report is updated while the
+    # evaluator runs, so this function can be called many times against the
+    # same HTML file.
+    html = re.sub(
+        r"\.analysis-list\{margin:0;padding-left:20px\}\.analysis-list li\{margin:6px 0\}\.analysis-list strong\{font-variant-numeric:tabular-nums\}\n?",
+        "",
+        html,
+    )
+    html = re.sub(
+        r"\s*<section class=\"section panel\"><h2>当前阶段分析</h2><ul id=\"analysis-list\" class=\"analysis-list\"></ul></section>",
+        "",
+        html,
+    )
     html = html.replace(
         '<div class="status"><strong>部分运行</strong>：当前没有评测进程，尚未生成最终合并的 <code>results.pkl</code>。已读取 <b id="done"></b> 条单题结果；指标只代表这一阶段样本，不能作为 2044 条完整基准结果。</div>',
         '<div class="status"><strong id="status-title"></strong>：<span id="status-text"></span></div>',
