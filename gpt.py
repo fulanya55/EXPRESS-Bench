@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 import requests
 
 
@@ -194,13 +195,24 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
         ]}
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is empty; add it to the repository .env file")
-    response = requests.post(
-        f"{OPENAI_URL}/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
-    response.raise_for_status()
+    request_url = f"{OPENAI_URL}/chat/completions"
+    # The shared gateway can occasionally exceed the read timeout while it is
+    # serving several GPU workers. Retry transient network timeouts so one
+    # worker does not terminate the whole torchrun evaluation.
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                request_url,
+                headers=headers,
+                json=payload,
+                timeout=(15, 180),
+            )
+            response.raise_for_status()
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(5 * (attempt + 1))
 
     output = response.json()
     _record_usage(output)
