@@ -200,7 +200,7 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
     # serving several GPU workers.  Keep retrying long enough that one slow
     # request does not terminate the whole torchrun evaluation.  The attempt
     # count can be lowered for quick smoke tests with EXPRESS_API_MAX_ATTEMPTS.
-    max_attempts = max(1, int(os.environ.get("EXPRESS_API_MAX_ATTEMPTS", "8")))
+    max_attempts = max(1, int(os.environ.get("EXPRESS_API_MAX_ATTEMPTS", "20")))
     for attempt in range(max_attempts):
         try:
             response = requests.post(
