@@ -109,6 +109,21 @@ def aggregate_usage(output_dir, world_size):
     return merged
 
 
+def load_saved_results(output_dir):
+    """Load per-question checkpoints so an interrupted run can resume."""
+    saved = {}
+    for result_path in sorted(Path(output_dir).glob("*/result.pkl")):
+        try:
+            with result_path.open("rb") as handle:
+                result = pickle.load(handle)
+            question_ind = int(result["question_ind"])
+        except (OSError, KeyError, TypeError, ValueError, EOFError, pickle.PickleError):
+            logging.warning("Skipping unreadable result checkpoint: %s", result_path)
+            continue
+        saved[question_ind] = result
+    return saved
+
+
 def write_progress(output_dir, rank, completed, total, usage):
     """Publish a small atomic status file for the other torchrun ranks."""
     path = Path(output_dir) / f"progress.rank{rank}.json"
@@ -172,7 +187,7 @@ def main(cfg):
     seed = cfg.seed
 
     if rank == 0:
-        for pattern in ("progress.rank*.json", "progress.rank*.tmp", "api_usage.rank*.json", "api_usage.rank*.jsonl"):
+        for pattern in ("progress.rank*.json", "progress.rank*.tmp"):
             for stale_path in Path(output_dir).glob(pattern):
                 stale_path.unlink(missing_ok=True)
     if world_size > 1:
@@ -197,13 +212,23 @@ def main(cfg):
         output_price_usd_per_1m=getattr(cfg, "api_output_usd_per_1m", None),
     )
 
+    # Existing per-question checkpoints are the source of truth for resume.
+    # Every rank sees the same shared output directory and filters its own
+    # deterministic shard below.
+    saved_results = load_saved_results(output_dir)
+
     # Load VLM. With torchrun each process gets a separate copy on one GPU.
     vlm = VLM(cfg.vlm)
 
     # Each rank gets a disjoint deterministic slice of the dataset.
-    question_indices = list(range(rank, len(questions_data), world_size))
+    rank_question_indices = list(range(rank, len(questions_data), world_size))
+    completed_rank = sum(question_ind in saved_results for question_ind in rank_question_indices)
+    question_indices = [
+        question_ind for question_ind in rank_question_indices
+        if question_ind not in saved_results
+    ]
     results_all = []
-    write_progress(output_dir, rank, 0, len(question_indices), usage_snapshot())
+    write_progress(output_dir, rank, completed_rank, len(rank_question_indices), usage_snapshot())
     progress = tqdm(
         question_indices,
         desc=f"Eval GPU {local_rank}" if world_size > 1 else "Eval",
@@ -636,7 +661,13 @@ def main(cfg):
             with open(os.path.join(output_dir, f"results.rank{rank}_{question_ind+1}.pkl"), "wb") as f:
                 pickle.dump(results_all, f)
         stats = usage_snapshot()
-        write_progress(output_dir, rank, len(results_all), len(question_indices), stats)
+        write_progress(
+            output_dir,
+            rank,
+            completed_rank + len(results_all),
+            len(rank_question_indices),
+            stats,
+        )
         global_stats = read_progress(output_dir, world_size)
         cost_text = f"${global_stats['cost_usd']:.4f}" if global_stats["cost_known"] else "cost=?"
         progress.set_postfix(
@@ -658,13 +689,11 @@ def main(cfg):
     if world_size > 1:
         torch.distributed.barrier()
     if rank == 0:
-        if world_size > 1:
-            results_all = []
-            for rank_index in range(world_size):
-                rank_path = Path(output_dir) / f"results.rank{rank_index}.pkl"
-                with rank_path.open("rb") as f:
-                    results_all.extend(pickle.load(f))
-            results_all.sort(key=lambda item: item["question_ind"])
+        # Merge all checkpoints, including results from before this process
+        # started.  Rank pickle files contain only the newly processed shard.
+        results_all = [
+            result for _, result in sorted(load_saved_results(output_dir).items())
+        ]
         with open(os.path.join(output_dir, "results.pkl"), "wb") as f:
             pickle.dump(results_all, f)
         C_avg, C_star_avg, E_path, d_T_avg = score(results_all)

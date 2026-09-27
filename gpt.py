@@ -69,6 +69,34 @@ def configure_usage(output_dir=None, rank=0, input_price_usd_per_1m=None,
     if output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         _usage_file = Path(output_dir) / f"api_usage.rank{rank}.jsonl"
+        # A resumed evaluation must retain the accounting from the requests
+        # already made by this rank.  The JSONL file is append-only, so load
+        # its records before the next request is sent.
+        if _usage_file.is_file():
+            with _usage_lock:
+                _usage.update({
+                    "calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cost_known": True,
+                })
+                with _usage_file.open(encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        try:
+                            record = json.loads(raw_line)
+                        except json.JSONDecodeError:
+                            continue
+                        _usage["calls"] += 1
+                        _usage["prompt_tokens"] += int(record.get("prompt_tokens", 0) or 0)
+                        _usage["completion_tokens"] += int(record.get("completion_tokens", 0) or 0)
+                        _usage["total_tokens"] += int(record.get("total_tokens", 0) or 0)
+                        cost_usd = record.get("cost_usd")
+                        if cost_usd is None:
+                            _usage["cost_known"] = False
+                        else:
+                            _usage["cost_usd"] += float(cost_usd)
 
 
 def usage_snapshot():
