@@ -10,12 +10,31 @@ def _parse_mark(value):
     return float(match.group(0))
 
 
+def _parse_eac(value):
+    """Parse the judge's ``grounding, accuracy`` response.
+
+    A small number of gateway responses can be malformed (for example
+    ``1/2`` with the accuracy component missing).  Such a row remains in the
+    per-question report but cannot contribute to aggregate metrics.
+    """
+    pieces = value.replace("Your mark:", "").strip().split(",", 1)
+    if len(pieces) != 2:
+        return None
+    try:
+        return _parse_mark(pieces[0]), int(_parse_mark(pieces[1]))
+    except (TypeError, ValueError):
+        return None
+
+
 def score(results):
     C, C_star, p_path, l_path, d_T = [], [], [], [], []
     for result in results:
         if result["path_len"] != float("inf"):
             EAC = result["EAC"].replace("Your mark:", "").strip()
-            grd, acc = _parse_mark(EAC.split(",", 1)[0]), int(_parse_mark(EAC.split(",", 1)[1]))
+            parsed_eac = _parse_eac(EAC)
+            if parsed_eac is None:
+                continue
+            grd, acc = parsed_eac
             C.append(grd*acc)
             C_star.append(acc)
             p_path.append(result["path_len"])
