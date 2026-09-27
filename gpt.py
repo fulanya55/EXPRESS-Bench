@@ -197,9 +197,11 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
         raise RuntimeError("OPENAI_API_KEY is empty; add it to the repository .env file")
     request_url = f"{OPENAI_URL}/chat/completions"
     # The shared gateway can occasionally exceed the read timeout while it is
-    # serving several GPU workers. Retry transient network timeouts so one
-    # worker does not terminate the whole torchrun evaluation.
-    for attempt in range(3):
+    # serving several GPU workers.  Keep retrying long enough that one slow
+    # request does not terminate the whole torchrun evaluation.  The attempt
+    # count can be lowered for quick smoke tests with EXPRESS_API_MAX_ATTEMPTS.
+    max_attempts = max(1, int(os.environ.get("EXPRESS_API_MAX_ATTEMPTS", "8")))
+    for attempt in range(max_attempts):
         try:
             response = requests.post(
                 request_url,
@@ -210,9 +212,15 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
             response.raise_for_status()
             break
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            if attempt == 2:
+            if attempt == max_attempts - 1:
                 raise
-            time.sleep(5 * (attempt + 1))
+            delay = min(60, 5 * (attempt + 1))
+            print(
+                f"[API retry {attempt + 1}/{max_attempts - 1}] "
+                f"transient gateway timeout; retrying in {delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
 
     output = response.json()
     _record_usage(output)
