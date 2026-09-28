@@ -1,5 +1,6 @@
 import base64
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,10 @@ _usage = {
     "cost_known": True,
 }
 _usage_file = None
+_rate_limit_file = None
+_min_request_interval = float(
+    os.environ.get("EXPRESS_API_MIN_INTERVAL_SECONDS", "1.0")
+)
 _input_price_usd_per_1m = _optional_float(os.environ.get("OPENAI_INPUT_USD_PER_1M"))
 _output_price_usd_per_1m = _optional_float(os.environ.get("OPENAI_OUTPUT_USD_PER_1M"))
 _current_question_ind = None
@@ -62,7 +67,7 @@ def configure_usage(output_dir=None, rank=0, input_price_usd_per_1m=None,
     Prices are deliberately configurable because OpenAI-compatible gateways
     generally return token usage but not the account's USD tariff.
     """
-    global _usage_file, _input_price_usd_per_1m, _output_price_usd_per_1m
+    global _usage_file, _rate_limit_file, _input_price_usd_per_1m, _output_price_usd_per_1m
     if input_price_usd_per_1m is not None:
         _input_price_usd_per_1m = float(input_price_usd_per_1m)
     if output_price_usd_per_1m is not None:
@@ -70,6 +75,9 @@ def configure_usage(output_dir=None, rank=0, input_price_usd_per_1m=None,
     if output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         _usage_file = Path(output_dir) / f"api_usage.rank{rank}.jsonl"
+        # All torchrun ranks share this lock so requests are spaced globally,
+        # rather than independently once per GPU process.
+        _rate_limit_file = Path(output_dir) / ".api_rate_limit.lock"
         # A resumed evaluation must retain the accounting from the requests
         # already made by this rank.  The JSONL file is append-only, so load
         # its records before the next request is sent.
@@ -163,6 +171,32 @@ def encode_image(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 
+def _throttle_request():
+    """Start no more than one gateway request per configured interval."""
+    if _min_request_interval <= 0:
+        return
+    lock_path = _rate_limit_file or Path("/tmp/express-bench-api-rate-limit.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        lock_handle.seek(0)
+        try:
+            previous_start = float(lock_handle.read().strip() or "0")
+        except ValueError:
+            previous_start = 0.0
+        now = time.monotonic()
+        if previous_start > now:
+            previous_start = 0.0
+        wait = _min_request_interval - (now - previous_start)
+        if wait > 0:
+            time.sleep(wait)
+        lock_handle.seek(0)
+        lock_handle.truncate()
+        lock_handle.write(str(time.monotonic()))
+        lock_handle.flush()
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
 def prompt_make(prompt_path, ex_prompt):
     with open(prompt_path, "r", encoding='utf-8') as f:
         txt = f.readlines()
@@ -205,7 +239,11 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
     max_attempts = configured_attempts if configured_attempts > 0 else None
     attempt = 0
     while True:
+        response = None
+        retry_reason = None
+        retry_exception = None
         try:
+            _throttle_request()
             response = requests.post(
                 request_url,
                 headers=headers,
@@ -214,19 +252,34 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
             )
             response.raise_for_status()
             break
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            attempt += 1
-            if max_attempts is not None and attempt >= max_attempts:
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            retry_reason = "transient gateway timeout/connection error"
+            retry_exception = exc
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in {408, 425, 429} and not (status is not None and status >= 500):
                 raise
-            delay = min(60, 5 * (attempt + 1))
-            print(
-                f"[API retry {attempt}"
-                + (f"/{max_attempts - 1}" if max_attempts is not None else "/∞")
-                + "] "
-                f"transient gateway timeout; retrying in {delay}s",
-                flush=True,
-            )
-            time.sleep(delay)
+            retry_reason = f"gateway HTTP {status}"
+            retry_exception = exc
+
+        attempt += 1
+        if max_attempts is not None and attempt >= max_attempts:
+            raise retry_exception
+        retry_after = 0.0
+        if response is not None:
+            try:
+                retry_after = float(response.headers.get("Retry-After", 0) or 0)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+        delay = min(60, max(5 * attempt, retry_after))
+        print(
+            f"[API retry {attempt}"
+            + (f"/{max_attempts - 1}" if max_attempts is not None else "/∞")
+            + "] "
+            f"{retry_reason}; retrying in {delay:g}s",
+            flush=True,
+        )
+        time.sleep(delay)
 
     output = response.json()
     _record_usage(output)
