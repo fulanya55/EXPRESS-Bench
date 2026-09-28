@@ -2,6 +2,7 @@ import json
 import sys
 import time
 import os
+from datetime import timedelta
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -79,7 +80,15 @@ def setup_distributed(cfg):
         if not torch.distributed.is_initialized():
             # A CPU-side process group is enough for barriers and avoids
             # competing with Habitat's CUDA context for NCCL resources.
-            torch.distributed.init_process_group(backend="gloo", init_method="env://")
+            # A rank can remain in an API retry loop while another rank has
+            # already finished its shard.  Keep collectives alive for the
+            # duration of that retry instead of using Gloo's 30-minute default
+            # timeout, which would terminate an otherwise resumable run.
+            torch.distributed.init_process_group(
+                backend="gloo",
+                init_method="env://",
+                timeout=timedelta(days=365),
+            )
         cfg.vlm.device = f"cuda:{local_rank}"
     return rank, local_rank, world_size
 
