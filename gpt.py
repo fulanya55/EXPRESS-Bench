@@ -198,10 +198,13 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
     request_url = f"{OPENAI_URL}/chat/completions"
     # The shared gateway can occasionally exceed the read timeout while it is
     # serving several GPU workers.  Keep retrying long enough that one slow
-    # request does not terminate the whole torchrun evaluation.  The attempt
-    # count can be lowered for quick smoke tests with EXPRESS_API_MAX_ATTEMPTS.
-    max_attempts = max(1, int(os.environ.get("EXPRESS_API_MAX_ATTEMPTS", "20")))
-    for attempt in range(max_attempts):
+    # request does not terminate the whole torchrun evaluation.  By default
+    # transient gateway failures are retried forever; set
+    # EXPRESS_API_MAX_ATTEMPTS to a positive integer for a bounded smoke test.
+    configured_attempts = int(os.environ.get("EXPRESS_API_MAX_ATTEMPTS", "0"))
+    max_attempts = configured_attempts if configured_attempts > 0 else None
+    attempt = 0
+    while True:
         try:
             response = requests.post(
                 request_url,
@@ -212,11 +215,14 @@ def gpt_4o_mini(prompt_path, ex_prompt, img_path=None):
             response.raise_for_status()
             break
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            if attempt == max_attempts - 1:
+            attempt += 1
+            if max_attempts is not None and attempt >= max_attempts:
                 raise
             delay = min(60, 5 * (attempt + 1))
             print(
-                f"[API retry {attempt + 1}/{max_attempts - 1}] "
+                f"[API retry {attempt}"
+                + (f"/{max_attempts - 1}" if max_attempts is not None else "/∞")
+                + "] "
                 f"transient gateway timeout; retrying in {delay}s",
                 flush=True,
             )
