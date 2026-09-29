@@ -74,7 +74,10 @@ def render_report(data, report_path: Path):
         epath_text = "—" if row["epath"] is None else f'{fmt(row["epath"])}%'
         detail_rows += (
             f'<tr><td class="num">{row["index"]}</td><td>{h(row["type"])}</td>'
-            f'<td class="question">{h(row["question"])}</td><td>{h(row["eac"])}</td>'
+            f'<td class="question">{h(row["question"])}</td>'
+            f'<td class="question">{h(row["answer"])}</td>'
+            f'<td class="question">{h(row["gen_answer"])}</td>'
+            f'<td>{h(row["eac"])}</td>'
             f'<td class="num">{c_text}</td><td class="num">{epath_text}</td>'
             f'<td class="num">{row["tokens"]:,}</td><td class="num">{money(row["cost"])}</td></tr>'
         )
@@ -157,6 +160,6 @@ def render_report(data, report_path: Path):
 <div class="grid section"><section class="panel"><h2>评分准确度分布</h2><div class="table-wrap"><table><thead><tr><th>得分</th><th>占比</th><th class="num">数量</th></tr></thead><tbody>{accuracy_rows}</tbody></table></div></section>
 <section class="panel"><h2>单题累计费用</h2>{cost_svg}<p class="muted">曲线仅统计已保存的 {completed:,} 条结果；上方累计费用包含全部已发出请求。</p></section></div>
 <section class="section panel"><h2>典型低分样本</h2><p class="muted">按 C 分数从低到高列出当前样本中的 8 条，便于区分视觉识别错误与导航失败。</p><div class="table-wrap"><table><thead><tr><th class="num">编号</th><th>类型</th><th>问题</th><th>参考答案</th><th>模型答案</th><th class="num">C</th><th class="num">E_path</th></tr></thead><tbody>{low_rows}</tbody></table></div></section>
-<section class="section panel"><h2>已保存单题结果（{completed:,} 条）</h2><div class="table-wrap"><table><thead><tr><th class="num">编号</th><th>类型</th><th>问题</th><th>EAC</th><th class="num">C</th><th class="num">E_path</th><th class="num">Tokens</th><th class="num">费用</th></tr></thead><tbody>{detail_rows}</tbody></table></div></section>
+<section class="section panel"><h2>已保存单题结果（{completed:,} 条）</h2><div class="table-wrap"><table><thead><tr><th class="num">编号</th><th>类型</th><th>问题</th><th>参考答案</th><th>模型回答</th><th>EAC</th><th class="num">C</th><th class="num">E_path</th><th class="num">Tokens</th><th class="num">费用</th></tr></thead><tbody>{detail_rows}</tbody></table></div></section>
 </main></body></html>'''
     report_path.write_text(html, encoding="utf-8")
